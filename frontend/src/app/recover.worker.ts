@@ -37,7 +37,14 @@ export type WorkerResponse =
       categories: Category[];
       structure: SiteStructure;
       productCount: number;
-      media: { count: number; bytes: number; files: string[]; thumbs: MediaThumb[] };
+      media: {
+        count: number;
+        bytes: number;
+        files: string[];
+        thumbs: MediaThumb[];
+        /** Images referenced in the DB but not present as files (manifest). */
+        referenced: string[];
+      };
       /** A single watermarked page the user can download free to vet quality. */
       sample: { name: string; text: string } | null;
     }
@@ -132,7 +139,13 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       categories: cat.categories,
       structure: cat.structure,
       productCount: cat.productCount,
-      media: { count: res.media.length, bytes: mediaBytes, files, thumbs },
+      media: {
+        count: res.media.length,
+        bytes: mediaBytes,
+        files,
+        thumbs,
+        referenced: res.referencedMedia,
+      },
       sample,
     };
     self.postMessage(msg);

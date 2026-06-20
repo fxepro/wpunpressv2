@@ -16,11 +16,11 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./src/*"],
-      "@unpress/engine": ["../backend/src/engine/index.ts"],
-      "@unpress/engine/*": ["../backend/src/engine/*"]
+      "@unpress/engine": ["./src/engine/index.ts"],
+      "@unpress/engine/*": ["./src/engine/*"]
     },
     "allowJs": true
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "../backend/src/engine/**/*.ts"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]
 }

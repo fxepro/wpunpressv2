@@ -1,16 +1,18 @@
 // ingest(bytes, filename) → a flat FileEntry[] the recovery engine can consume,
-// regardless of the original container format. Today only `.wpress` and bare
-// `.sql` are wired up; zip / tar / gzip / wxr are recognized by the sniffer and
-// throw a typed UnsupportedFormatError until their adapters land. Each new
-// format is one `case` here — recover.ts never changes.
+// regardless of the original container format. Each new format is one `case`
+// here — recover.ts never changes.
 
 import { iterateWpress } from "../wpress";
+import { gunzip, stripGzExtension } from "./gzip";
 import { sniffFormat } from "./sniff";
-import { UnsupportedFormatError, type FileEntry, type IngestResult } from "./types";
+import { fromTar } from "./tar";
+import { UnsupportedFormatError, type ArchiveFormat, type FileEntry, type IngestResult } from "./types";
 
 export { UnsupportedFormatError };
 export type { FileEntry, IngestResult, ArchiveFormat } from "./types";
 export { sniffFormat };
+
+const MAX_NEST_DEPTH = 3;
 
 /** Strip leading "./" or "/" and normalize separators to POSIX. */
 function normalize(path: string): string {
@@ -25,7 +27,11 @@ function fromWpress(bytes: Uint8Array): FileEntry[] {
   return files;
 }
 
-export function ingest(bytes: Uint8Array, filename = ""): IngestResult {
+function ingestBytes(bytes: Uint8Array, filename: string, depth: number): IngestResult {
+  if (depth > MAX_NEST_DEPTH) {
+    throw new Error("Backup has too many nested compression layers.");
+  }
+
   const format = sniffFormat(bytes, filename);
   switch (format) {
     case "wpress":
@@ -37,8 +43,18 @@ export function ingest(bytes: Uint8Array, filename = ""): IngestResult {
     case "sql":
       // A bare dump has no media; hand it straight to the SQL parser.
       return { format, siteCount: 1, files: [{ path: "database.sql", data: bytes }] };
+    case "gzip": {
+      const inner = gunzip(bytes);
+      return ingestBytes(inner, stripGzExtension(filename), depth + 1);
+    }
+    case "tar":
+      return { format, siteCount: 1, files: fromTar(bytes) };
     default:
-      // zip | tar | gzip | wxr — recognized, adapter not built yet.
+      // zip | wxr — recognized, adapter not built yet.
       throw new UnsupportedFormatError(format);
   }
+}
+
+export function ingest(bytes: Uint8Array, filename = ""): IngestResult {
+  return ingestBytes(bytes, filename, 0);
 }

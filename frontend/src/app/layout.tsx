@@ -32,8 +32,11 @@ export default function RootLayout({
             un<span className="dot">press</span>
           </Link>
           <nav>
-            <Link href="/how-it-works">How it works</Link>
-            <Link href="/pricing">Pricing</Link>
+            <Link href="/#how">How it works</Link>
+            <Link href="/#formats">Formats</Link>
+            <Link href="/#pricing">Pricing</Link>
+            <Link href="/#faq">FAQ</Link>
+            <Link href="/#recover" className="navcta">Recover a site</Link>
           </nav>
         </header>
 
@@ -43,9 +46,10 @@ export default function RootLayout({
           <div className="inner">
             <span>© {new Date().getFullYear()} Unpress — your website, set free.</span>
             <span>
-              <Link href="/">Recover</Link>
-              <Link href="/how-it-works">How it works</Link>
-              <Link href="/pricing">Pricing</Link>
+              <Link href="/#recover">Recover</Link>
+              <Link href="/#how">How it works</Link>
+              <Link href="/#formats">Formats</Link>
+              <Link href="/#pricing">Pricing</Link>
             </span>
           </div>
         </footer>

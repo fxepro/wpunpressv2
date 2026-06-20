@@ -18,9 +18,28 @@ const OPTION_COLS = ["option_id", "option_name", "option_value", "autoload"];
 const MEDIA_RE = /\.(jpe?g|png|webp|gif|svg|ico|bmp|avif|mp4|webm|pdf|docx?|pptx?|xlsx?)$/i;
 // Real media-library uploads live under uploads/<year>/<month>/ — this skips
 // theme/plugin asset dirs (fusion-icons, fusion-styles, wpcode, sucuri, …).
-const UPLOAD_PATH_RE = /^uploads\/\d{4}\//;
+const UPLOAD_PATH_RE = /(?:^|\/)(?:wp-content\/)?uploads\/\d{4}\//;
 // WordPress's auto-generated size variants (we keep only the original).
 const RESIZED_RE = /(-\d+x\d+|-scaled)\.\w+$/i;
+// Every uploads image *referenced* anywhere in a DB dump (attachments, content,
+// meta, slider/theme config). Used to build a manifest when the actual files
+// aren't in the backup (e.g. a SQL-only dump).
+const REF_MEDIA_RE =
+  /(?:wp-content\/)?uploads\/(?:sites\/\d+\/)?\d{4}\/\d{2}\/[^\s"'()\\/]+\.(?:jpe?g|png|webp|gif|svg|bmp|avif)/gi;
+
+/** Normalize every referenced uploads image to its canonical
+ * `wp-content/uploads/...` server path (originals only, deduped, sorted). */
+function extractReferencedMedia(db: string): string[] {
+  const set = new Set<string>();
+  for (const m of db.matchAll(REF_MEDIA_RE)) {
+    let p = m[0];
+    if (!p.startsWith("wp-content/")) p = "wp-content/" + p;
+    p = p.replace(/-\d+x\d+(\.\w+)$/i, "$1").replace(/-scaled(\.\w+)$/i, "$1");
+    set.add(p);
+    if (set.size > 5000) break;
+  }
+  return [...set].sort();
+}
 
 export interface RecoverOptions {
   /** Which post_status values to recover. Defaults to published only. */
@@ -75,29 +94,51 @@ export interface RecoverResult {
   site: SiteInfo;
   pages: RecoveredPage[];
   media: MediaFile[];
+  /** Image paths the DB references but that aren't present as files (e.g. a
+   * SQL-only dump). The manifest a user hands their host to demand the uploads. */
+  referencedMedia: string[];
   /** Count of WooCommerce products found (gated — paid tier). */
   productCount: number;
   generatedAt: string;
 }
 
 function toLocalMediaPath(prefixedPath: string): string {
-  // entries arrive as "uploads/2023/.." or "uploads/sites/178/2023/.."
-  const after = prefixedPath.replace(/^uploads\//, "").replace(/^sites\/\d+\//, "");
+  // entries arrive as "uploads/2023/.." or "wp-content/uploads/2023/.." or
+  // "uploads/sites/178/2023/.."
+  const after = prefixedPath
+    .replace(/^wp-content\//, "")
+    .replace(/^uploads\//, "")
+    .replace(/^sites\/\d+\//, "");
   return "media/" + stripSizeSuffix(after);
 }
 
-/** Run the full recovery over the bytes of a `.wpress` file. */
+function findDatabaseFile(files: { path: string; data: Uint8Array }[]) {
+  const exact = files.find((e) => e.path === "database.sql" || e.path.endsWith("/database.sql"));
+  if (exact) return exact;
+  return files.find((e) => {
+    if (!/\.sql$/i.test(e.path)) return false;
+    const head = new TextDecoder("utf-8", { fatal: false })
+      .decode(e.data.subarray(0, Math.min(4096, e.data.length)))
+      .toLowerCase();
+    return head.includes("insert into") || head.includes("create table") || head.includes("mysql dump");
+  });
+}
+
+/** Run the full recovery over backup bytes (any supported ingest format). */
 export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverResult {
   const statuses = opts.statuses ?? ["publish"];
   let dbText = "";
   const media: MediaFile[] = [];
 
   const { files } = ingest(bytes, opts.filename);
+  const dbFile = findDatabaseFile(files);
+  if (dbFile) {
+    dbText = new TextDecoder("utf-8", { fatal: false }).decode(dbFile.data);
+  }
+
   for (const e of files) {
     const name = e.path.slice(e.path.lastIndexOf("/") + 1);
-    if (e.path === "database.sql") {
-      dbText = new TextDecoder("utf-8").decode(e.data);
-    } else if (
+    if (
       UPLOAD_PATH_RE.test(e.path) &&
       MEDIA_RE.test(name) &&
       !RESIZED_RE.test(name) // originals only — drop -150x150, -scaled, etc.
@@ -153,7 +194,9 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
     return a.date < b.date ? -1 : 1;
   });
 
-  return { site, pages, media, productCount, generatedAt: new Date().toISOString() };
+  const referencedMedia = dbText ? extractReferencedMedia(dbText) : [];
+
+  return { site, pages, media, referencedMedia, productCount, generatedAt: new Date().toISOString() };
 }
 
 // Drafts/private content is kept but routed to its own folder so it can never be
