@@ -2,7 +2,15 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { WorkerResponse } from "./recover.worker";
-import type { Category, SiteStructure, TreeNode, Counts } from "@unpress/engine";
+import type {
+  Category,
+  SiteStructure,
+  TreeNode,
+  Counts,
+  RecoveredComment,
+  ThemeInfo,
+  PluginInfo,
+} from "@unpress/engine";
 
 type Status = "idle" | "working" | "done" | "error";
 
@@ -59,6 +67,10 @@ interface Result {
   categories: Category[];
   structure: SiteStructure;
   productCount: number;
+  comments: RecoveredComment[];
+  themes: ThemeInfo[];
+  plugins: PluginInfo[];
+  spamCount: number;
   media: MediaState;
   sample: { name: string; text: string } | null;
 }
@@ -117,6 +129,10 @@ export default function Home() {
         categories: data.categories,
         structure: data.structure,
         productCount: data.productCount,
+        comments: data.comments,
+        themes: data.themes,
+        plugins: data.plugins,
+        spamCount: data.spamCount,
         media: {
           count: data.media.count,
           bytes: data.media.bytes,
@@ -459,6 +475,9 @@ function Results({
     { key: "structure", label: "File structure" },
     ...result.categories.map((c) => ({ key: c.key, label: c.label, count: c.count })),
     { key: "media", label: "Media", count: result.media.count || result.media.referenced.length },
+    ...(result.comments.length ? [{ key: "comments", label: "Comments", count: result.comments.length }] : []),
+    ...(result.themes.length ? [{ key: "appearance", label: "Appearance", count: result.themes.length }] : []),
+    ...(result.plugins.length ? [{ key: "plugins", label: "Plugins", count: result.plugins.length }] : []),
     { key: "products", label: "Store", count: result.productCount, locked: true },
   ];
   const [tab, setTab] = useState("structure");
@@ -505,9 +524,12 @@ function Results({
         ))}
       </div>
 
-      {tab === "structure" && <StructureTab structure={result.structure} />}
+      {tab === "structure" && <StructureTab structure={result.structure} spamCount={result.spamCount} />}
       {result.categories.map((cat) => tab === cat.key && <ItemList key={cat.key} items={cat.items} />)}
       {tab === "media" && <MediaTab media={result.media} />}
+      {tab === "comments" && <CommentsTab comments={result.comments} />}
+      {tab === "appearance" && <AppearanceTab themes={result.themes} />}
+      {tab === "plugins" && <PluginsTab plugins={result.plugins} />}
       {tab === "products" && <ProductsTab count={result.productCount} />}
 
       <button onClick={onReset} className="recover-another">
@@ -517,9 +539,16 @@ function Results({
   );
 }
 
-function StructureTab({ structure }: { structure: SiteStructure }) {
+function StructureTab({ structure, spamCount }: { structure: SiteStructure; spamCount: number }) {
   return (
     <div>
+      {spamCount > 0 && (
+        <div className="spam-note">
+          🛡️ Filtered out <strong>{spamCount.toLocaleString()}</strong> injected spam post
+          {spamCount === 1 ? "" : "s"} (casino/gambling). Your old site was likely compromised — these
+          were excluded from the recovery.
+        </div>
+      )}
       <div className="groupgrid">
         {structure.groups.map((g) => (
           <div className="groupstat" key={g.label}>
@@ -559,12 +588,83 @@ function ItemList({ items }: { items: Category["items"] }) {
               <span className="badge type">{it.type}</span>
             )}
           </div>
+          {it.fields.length > 0 && (
+            <dl className="fields">
+              {it.fields.slice(0, 6).map((f) => (
+                <div className="field" key={f.key}>
+                  <dt>{f.label}</dt>
+                  <dd>{f.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
           <p>{it.excerpt || "—"}</p>
           <div className="foot">
             {it.words} words · {it.images} images
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function CommentsTab({ comments }: { comments: RecoveredComment[] }) {
+  if (!comments.length) return <p className="muted-note">No comments found in this backup.</p>;
+  return (
+    <div>
+      <p className="muted-note mb">{comments.length} approved comments recovered.</p>
+      <div className="itemgrid">
+        {comments.slice(0, 200).map((cm) => (
+          <div className="itemcard" key={cm.id}>
+            <div className="row">
+              <h4>{cm.author}</h4>
+              {!cm.approved && <span className="badge draft">Pending</span>}
+            </div>
+            <p>{cm.content.slice(0, 220) || "—"}</p>
+            <div className="foot">{cm.date?.slice(0, 10)} · on post #{cm.postId}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AppearanceTab({ themes }: { themes: ThemeInfo[] }) {
+  if (!themes.length) return <p className="muted-note">No themes found in this backup.</p>;
+  return (
+    <div>
+      <p className="muted-note mb">
+        {themes.length} theme{themes.length === 1 ? "" : "s"} found. The active theme is informational
+        only — Unpress recovers your content, not the disposable theme.
+      </p>
+      <div className="filelist">
+        {themes.map((t) => (
+          <div key={t.slug}>
+            {t.name}
+            {t.active && <span className="badge type" style={{ marginLeft: 8 }}>Active</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PluginsTab({ plugins }: { plugins: PluginInfo[] }) {
+  if (!plugins.length) return <p className="muted-note">No plugins found in this backup.</p>;
+  const active = plugins.filter((p) => p.active).length;
+  return (
+    <div>
+      <p className="muted-note mb">
+        {plugins.length} plugin{plugins.length === 1 ? "" : "s"} found ({active} active).
+      </p>
+      <div className="filelist">
+        {plugins.map((p) => (
+          <div key={p.slug}>
+            {p.slug}
+            {p.active && <span className="badge type" style={{ marginLeft: 8 }}>Active</span>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

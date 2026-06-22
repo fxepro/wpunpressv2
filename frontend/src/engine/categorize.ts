@@ -1,14 +1,53 @@
-// Groups recovered content into the tabbed categories the app shows
-// (Pages, Posts, Portfolio, FAQs, …) and builds a site-structure tree.
-// WooCommerce products are surfaced only as a locked/paid count.
+// Groups recovered content into tabs. v2 model (mirrors the WP admin):
+//   • CORE tabs   — the nouns stock WordPress ships without plugins: Pages, Posts.
+//     (Media / Comments / Appearance are core too, but live on RecoverResult and
+//      are rendered as their own tabs by the app.)
+//   • FREE-FORM tabs — every other post type a PLUGIN added (jobs, lessons,
+//     events, portfolio, testimonials, …) is discovered and gets its own tab,
+//     auto-labelled. No hardcoded list.
 
 import type { RecoverResult, RecoveredPage } from "./recover";
+import type { MetaField } from "./meta";
+import { humanize } from "./meta";
 
-const PORTFOLIO = new Set(["portfolio", "avada_portfolio", "jetpack-portfolio", "project"]);
-const FAQ = new Set(["avada_faq", "faq", "sp_faq", "fusion_faq", "ufaq"]);
-const TESTIMONIAL = new Set(["testimonial", "avada_testimonial"]);
+// Known synonyms → one canonical bucket + a friendly, pluralized label. Anything
+// not listed here still gets a tab, labelled by humanizing its post_type slug.
+const KNOWN: Record<string, { key: string; label: string }> = {
+  page: { key: "pages", label: "Pages" },
+  post: { key: "posts", label: "Posts" },
+  portfolio: { key: "portfolio", label: "Portfolio" },
+  avada_portfolio: { key: "portfolio", label: "Portfolio" },
+  "jetpack-portfolio": { key: "portfolio", label: "Portfolio" },
+  project: { key: "portfolio", label: "Portfolio" },
+  avada_faq: { key: "faqs", label: "FAQs" },
+  faq: { key: "faqs", label: "FAQs" },
+  sp_faq: { key: "faqs", label: "FAQs" },
+  fusion_faq: { key: "faqs", label: "FAQs" },
+  ufaq: { key: "faqs", label: "FAQs" },
+  testimonial: { key: "testimonials", label: "Testimonials" },
+  avada_testimonial: { key: "testimonials", label: "Testimonials" },
+  jobpost: { key: "jobs", label: "Jobs" },
+  job_listing: { key: "jobs", label: "Jobs" },
+  noo_job: { key: "jobs", label: "Jobs" },
+  "awsm_job_openings": { key: "jobs", label: "Jobs" },
+  "sfwd-lessons": { key: "lessons", label: "Lessons" },
+  lesson: { key: "lessons", label: "Lessons" },
+  "sfwd-courses": { key: "courses", label: "Courses" },
+  course: { key: "courses", label: "Courses" },
+  tribe_events: { key: "events", label: "Events" },
+  event: { key: "events", label: "Events" },
+};
 
-export type CategoryKey = "pages" | "posts" | "portfolio" | "faqs" | "testimonials";
+// Core tabs render first, in WP-admin order. Everything else is free-form and
+// sorted by label after these.
+const CORE_ORDER = ["pages", "posts"];
+
+function classify(type: string): { key: string; label: string } {
+  if (KNOWN[type]) return KNOWN[type];
+  const label = humanize(type) || type;
+  // pluralize the auto label lightly
+  return { key: type, label: /s$/i.test(label) ? label : label + "s" };
+}
 
 export interface CatItem {
   title: string;
@@ -18,12 +57,15 @@ export interface CatItem {
   words: number;
   images: number;
   excerpt: string;
+  fields: MetaField[];
 }
 
 export interface Category {
-  key: CategoryKey;
+  key: string;
   label: string;
   count: number;
+  /** core = stock-WP noun; addon = plugin-added (free-form). */
+  tier: "core" | "addon";
   items: CatItem[];
 }
 
@@ -36,14 +78,6 @@ export interface TreeNode {
 export interface SiteStructure {
   tree: TreeNode[];
   groups: { label: string; count: number }[];
-}
-
-function bucketOf(type: string): CategoryKey {
-  if (type === "page") return "pages";
-  if (PORTFOLIO.has(type)) return "portfolio";
-  if (FAQ.has(type)) return "faqs";
-  if (TESTIMONIAL.has(type)) return "testimonials";
-  return "posts";
 }
 
 function toItem(p: RecoveredPage): CatItem {
@@ -61,6 +95,7 @@ function toItem(p: RecoveredPage): CatItem {
     words: p.markdown ? p.markdown.split(/\s+/).filter(Boolean).length : 0,
     images: p.images.length,
     excerpt,
+    fields: p.fields,
   };
 }
 
@@ -95,15 +130,6 @@ function buildTree(pages: RecoveredPage[]): TreeNode[] {
   return roots;
 }
 
-const LABELS: Record<CategoryKey, string> = {
-  pages: "Pages",
-  posts: "Posts",
-  portfolio: "Portfolio",
-  faqs: "FAQs",
-  testimonials: "Testimonials",
-};
-const ORDER: CategoryKey[] = ["pages", "posts", "portfolio", "faqs", "testimonials"];
-
 export interface Categorized {
   categories: Category[];
   structure: SiteStructure;
@@ -111,26 +137,38 @@ export interface Categorized {
 }
 
 export function categorize(res: RecoverResult): Categorized {
-  const groups: Record<CategoryKey, RecoveredPage[]> = {
-    pages: [], posts: [], portfolio: [], faqs: [], testimonials: [],
-  };
-  for (const p of res.pages) groups[bucketOf(p.type)].push(p);
+  // Bucket every recovered page by its classified key, remembering label + tier.
+  const buckets = new Map<string, { label: string; tier: "core" | "addon"; pages: RecoveredPage[] }>();
+  for (const p of res.pages) {
+    const { key, label } = classify(p.type);
+    const tier = CORE_ORDER.includes(key) ? "core" : "addon";
+    let b = buckets.get(key);
+    if (!b) {
+      b = { label, tier, pages: [] };
+      buckets.set(key, b);
+    }
+    b.pages.push(p);
+  }
 
-  const categories: Category[] = ORDER.filter((k) => groups[k].length > 0).map((k) => ({
-    key: k,
-    label: LABELS[k],
-    count: groups[k].length,
-    items: groups[k].map(toItem),
-  }));
+  // Core buckets in WP order, then free-form buckets alphabetically by label.
+  const keys = [...buckets.keys()].sort((a, b) => {
+    const ai = CORE_ORDER.indexOf(a);
+    const bi = CORE_ORDER.indexOf(b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    return buckets.get(a)!.label.localeCompare(buckets.get(b)!.label);
+  });
 
+  const categories: Category[] = keys.map((k) => {
+    const b = buckets.get(k)!;
+    return { key: k, label: b.label, count: b.pages.length, tier: b.tier, items: b.pages.map(toItem) };
+  });
+
+  const pagesBucket = buckets.get("pages")?.pages ?? [];
   const structure: SiteStructure = {
-    tree: buildTree(groups.pages),
+    tree: buildTree(pagesBucket),
     groups: [
-      { label: "Pages", count: groups.pages.length },
-      { label: "Posts", count: groups.posts.length },
-      { label: "Portfolio", count: groups.portfolio.length },
-      { label: "FAQs", count: groups.faqs.length },
-      { label: "Testimonials", count: groups.testimonials.length },
+      ...categories.map((c) => ({ label: c.label, count: c.count })),
+      { label: "Comments", count: res.comments.length },
       { label: "Media", count: res.media.length },
       { label: "Products (locked)", count: res.productCount },
     ].filter((g) => g.count > 0),

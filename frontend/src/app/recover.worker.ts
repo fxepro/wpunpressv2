@@ -18,6 +18,9 @@ import {
   type Counts,
   type Category,
   type SiteStructure,
+  type RecoveredComment,
+  type ThemeInfo,
+  type PluginInfo,
 } from "@unpress/engine";
 
 type RecoverResult = ReturnType<typeof recover>;
@@ -37,6 +40,10 @@ export type WorkerResponse =
       categories: Category[];
       structure: SiteStructure;
       productCount: number;
+      comments: RecoveredComment[];
+      themes: ThemeInfo[];
+      plugins: PluginInfo[];
+      spamCount: number;
       media: {
         count: number;
         bytes: number;
@@ -75,13 +82,55 @@ function watermark(md: string): string {
   );
 }
 
+function renderComments(comments: RecoveredComment[]): string {
+  return (
+    "\n\n## Comments\n\n" +
+    comments
+      .map((c) => `**${c.author}** — ${c.date?.slice(0, 10)}\n\n${c.content}\n`)
+      .join("\n---\n\n")
+  );
+}
+
 async function buildZip(res: RecoverResult, inv: Inventory): Promise<Blob> {
   const zip = new JSZip();
   zip.file("inventory.json", JSON.stringify(inv, null, 2));
+
+  // Group comments by the post they belong to so each page/post markdown
+  // carries its own discussion (comments are WP-core — they ship too).
+  const commentsByPost = new Map<string, RecoveredComment[]>();
+  for (const c of res.comments) {
+    const arr = commentsByPost.get(c.postId) ?? [];
+    arr.push(c);
+    commentsByPost.set(c.postId, arr);
+  }
+
   for (const p of res.pages) {
-    zip.file(pageFilePath(p, "md"), pageToMarkdownFile(p));
+    let md = pageToMarkdownFile(p);
+    const cms = commentsByPost.get(p.id);
+    if (cms?.length) md += renderComments(cms);
+    zip.file(pageFilePath(p, "md"), md);
     if (p.html) zip.file(pageFilePath(p, "html"), p.html);
   }
+
+  // Structured data dumps — the whole point of the product is you get it ALL.
+  zip.file("data/comments.json", JSON.stringify(res.comments, null, 2));
+  zip.file(
+    "data/site.json",
+    JSON.stringify(
+      {
+        site: res.site,
+        counts: inv.counts,
+        themes: res.themes,
+        plugins: res.plugins,
+        productCount: res.productCount,
+        spamFiltered: res.spamCount,
+        generatedAt: res.generatedAt,
+      },
+      null,
+      2,
+    ),
+  );
+
   for (const f of res.media) zip.file(f.path, f.data);
   return zip.generateAsync({ type: "blob", compression: "DEFLATE" });
 }
@@ -139,6 +188,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       categories: cat.categories,
       structure: cat.structure,
       productCount: cat.productCount,
+      comments: res.comments,
+      themes: res.themes,
+      plugins: res.plugins,
+      spamCount: res.spamCount,
       media: {
         count: res.media.length,
         bytes: mediaBytes,

@@ -4,6 +4,7 @@
 import { ingest } from "./ingest";
 import { detectPrefix, keyValueTable, rowsToObjects } from "./sql";
 import { cleanContent, rewriteUrls, stripSizeSuffix } from "./content";
+import { extractFields, isSpam, unserializePhp, type MetaField } from "./meta";
 
 // Standard wp_posts column order.
 const POST_COLS = [
@@ -14,6 +15,13 @@ const POST_COLS = [
   "post_mime_type", "comment_count",
 ];
 const OPTION_COLS = ["option_id", "option_name", "option_value", "autoload"];
+const POSTMETA_COLS = ["meta_id", "post_id", "meta_key", "meta_value"];
+const COMMENT_COLS = [
+  "comment_ID", "comment_post_ID", "comment_author", "comment_author_email",
+  "comment_author_url", "comment_author_IP", "comment_date", "comment_date_gmt",
+  "comment_content", "comment_karma", "comment_approved", "comment_agent",
+  "comment_type", "comment_parent", "user_id",
+];
 
 const MEDIA_RE = /\.(jpe?g|png|webp|gif|svg|ico|bmp|avif|mp4|webm|pdf|docx?|pptx?|xlsx?)$/i;
 // Real media-library uploads live under uploads/<year>/<month>/ — this skips
@@ -66,6 +74,28 @@ export interface RecoveredPage {
   /** Original post_content — kept so the rebuild can parse layout structure. */
   raw: string;
   images: string[];
+  /** Custom fields recovered from postmeta (jobs, lessons, events, ACF, …). */
+  fields: MetaField[];
+}
+
+export interface RecoveredComment {
+  id: string;
+  postId: string;
+  author: string;
+  date: string;
+  content: string;
+  approved: boolean;
+}
+
+export interface ThemeInfo {
+  slug: string;
+  name: string;
+  active: boolean;
+}
+
+export interface PluginInfo {
+  slug: string;
+  active: boolean;
 }
 
 export interface MediaFile {
@@ -79,16 +109,29 @@ export interface SiteInfo {
   url: string;
 }
 
-// Public content post types we recover (free). Internal types (nav_menu_item,
-// revision, attachment, fusion_element/template, etc.) are skipped. WooCommerce
-// `product` is detected but gated behind the paid tier.
-const CONTENT_TYPES = new Set([
-  "page", "post",
-  "portfolio", "avada_portfolio", "jetpack-portfolio", "project",
-  "avada_faq", "faq", "sp_faq", "fusion_faq", "ufaq",
-  "testimonial", "avada_testimonial",
+// v2: recover EVERY post type by default. Instead of an allowlist (which silently
+// dropped plugin content like jobs/lessons), we DENY only WordPress internals and
+// page-builder scaffolding. Anything else — jobpost, sfwd-lessons, tribe_events,
+// portfolio, testimonials, custom CPTs — becomes recoverable content automatically.
+const SKIP_TYPES = new Set([
+  "revision", "nav_menu_item", "attachment", "custom_css", "customize_changeset",
+  "oembed_cache", "user_request", "wp_block", "wp_template", "wp_template_part",
+  "wp_global_styles", "wp_navigation", "wpcode",
+  // Avada / Fusion builder internals
+  "fusion_element", "fusion_template", "fusion_tb_layout", "fusion_tb_section",
+  "fusion_form", "fusion_icons", "fusion_form_submission", "fma_blocks",
+  "awb_off_canvas", "slide", "themefusion_elastic",
+  // ACF / form / popup builder definitions (not user content)
+  "acf-field", "acf-field-group", "acf-post-type", "acf-taxonomy",
+  // Form/application SUBMISSIONS (user PII, not site content to rebuild)
+  "jobpost_applicants", "wpcf7_contact_form", "flamingo_inbound", "frm_form_actions",
+  "nf_sub", "wpforms_log", "give_payment", "shop_order", "shop_order_refund",
 ]);
 const PRODUCT_TYPES = new Set(["product", "product_variation"]);
+
+function isContentType(type: string): boolean {
+  return !SKIP_TYPES.has(type) && !PRODUCT_TYPES.has(type);
+}
 
 export interface RecoverResult {
   site: SiteInfo;
@@ -99,6 +142,14 @@ export interface RecoverResult {
   referencedMedia: string[];
   /** Count of WooCommerce products found (gated — paid tier). */
   productCount: number;
+  /** Approved comments recovered from wp_comments. */
+  comments: RecoveredComment[];
+  /** Installed themes (with the active one flagged). */
+  themes: ThemeInfo[];
+  /** Installed plugins (with active ones flagged). */
+  plugins: PluginInfo[];
+  /** Count of injected casino/gambling spam posts that were filtered out. */
+  spamCount: number;
   generatedAt: string;
 }
 
@@ -122,6 +173,75 @@ function findDatabaseFile(files: { path: string; data: Uint8Array }[]) {
       .toLowerCase();
     return head.includes("insert into") || head.includes("create table") || head.includes("mysql dump");
   });
+}
+
+/** Group postmeta rows into a per-post `meta_key → meta_value` map (kept posts only). */
+function parsePostMeta(
+  dbText: string,
+  prefix: string,
+  keepIds: Set<string>,
+): Map<string, Record<string, string>> {
+  const byPost = new Map<string, Record<string, string>>();
+  for (const r of rowsToObjects(dbText, prefix + "postmeta", POSTMETA_COLS)) {
+    if (keepIds.size && !keepIds.has(r.post_id)) continue;
+    let m = byPost.get(r.post_id);
+    if (!m) {
+      m = {};
+      byPost.set(r.post_id, m);
+    }
+    m[r.meta_key] = r.meta_value;
+  }
+  return byPost;
+}
+
+/** Recover approved, real comments (skip spam/trash/pingbacks). */
+function parseComments(dbText: string, prefix: string): RecoveredComment[] {
+  const out: RecoveredComment[] = [];
+  for (const r of rowsToObjects(dbText, prefix + "comments", COMMENT_COLS)) {
+    if (r.comment_approved === "spam" || r.comment_approved === "trash") continue;
+    if (r.comment_type === "pingback" || r.comment_type === "trackback") continue;
+    if (!r.comment_content?.trim()) continue;
+    out.push({
+      id: r.comment_ID,
+      postId: r.comment_post_ID,
+      author: r.comment_author || "Anonymous",
+      date: r.comment_date,
+      content: cleanContent(r.comment_content).markdown || r.comment_content,
+      approved: r.comment_approved === "1",
+    });
+  }
+  return out;
+}
+
+/** Distinct top-level directory names under a wp-content subfolder. */
+function dirsUnder(files: { path: string }[], re: RegExp): Set<string> {
+  const set = new Set<string>();
+  for (const f of files) {
+    const m = f.path.match(re);
+    if (m && m[1] && m[1] !== "index.php") set.add(m[1]);
+  }
+  return set;
+}
+
+function detectThemes(files: { path: string }[], options: Record<string, string>): ThemeInfo[] {
+  const slugs = dirsUnder(files, /(?:^|\/)(?:wp-content\/)?themes\/([^/]+)\//);
+  const active = new Set([options["stylesheet"], options["template"]].filter(Boolean));
+  return [...slugs]
+    .sort()
+    .map((slug) => ({ slug, name: slug, active: active.has(slug) }));
+}
+
+function detectPlugins(files: { path: string }[], options: Record<string, string>): PluginInfo[] {
+  const slugs = dirsUnder(files, /(?:^|\/)(?:wp-content\/)?plugins\/([^/]+)\//);
+  const active = new Set<string>();
+  const parsed = unserializePhp(options["active_plugins"] || "");
+  if (Array.isArray(parsed)) {
+    for (const p of parsed) {
+      const dir = String(p).split("/")[0];
+      if (dir) active.add(dir);
+    }
+  }
+  return [...slugs].sort().map((slug) => ({ slug, active: active.has(slug) }));
 }
 
 /** Run the full recovery over backup bytes (any supported ingest format). */
@@ -157,18 +277,32 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
     url: options["siteurl"] || "",
   };
 
-  const pages: RecoveredPage[] = [];
+  // First pass: keep every content row (any post type), gate products, drop
+  // injected casino-spam posts. Then join postmeta only for the rows we kept.
+  const contentRows: Record<string, string>[] = [];
   let productCount = 0;
+  let spamCount = 0;
   for (const r of rowsToObjects(dbText, prefix + "posts", POST_COLS)) {
     if (PRODUCT_TYPES.has(r.post_type)) {
       if (r.post_status === "publish") productCount++;
       continue;
     }
-    if (!CONTENT_TYPES.has(r.post_type)) continue;
+    if (!isContentType(r.post_type)) continue;
     if (!statuses.includes(r.post_status)) continue;
+    // Spam injection is almost always type=post — don't risk filtering pages/CPTs.
+    if (r.post_type === "post" && isSpam(r.post_title || "", r.post_content || "")) {
+      spamCount++;
+      continue;
+    }
+    contentRows.push(r);
+  }
 
+  const keepIds = new Set(contentRows.map((r) => r.ID));
+  const metaByPost = parsePostMeta(dbText, prefix, keepIds);
+
+  const pages: RecoveredPage[] = contentRows.map((r) => {
     const cleaned = cleanContent(r.post_content);
-    pages.push({
+    return {
       id: r.ID,
       type: r.post_type,
       status: r.post_status,
@@ -184,8 +318,9 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
       html: cleaned.html,
       raw: r.post_content,
       images: cleaned.images,
-    });
-  }
+      fields: extractFields(metaByPost.get(r.ID) || {}),
+    };
+  });
 
   // Pages first, then posts; both by menu order then date.
   pages.sort((a, b) => {
@@ -195,8 +330,22 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
   });
 
   const referencedMedia = dbText ? extractReferencedMedia(dbText) : [];
+  const comments = dbText ? parseComments(dbText, prefix) : [];
+  const themes = detectThemes(files, options);
+  const plugins = detectPlugins(files, options);
 
-  return { site, pages, media, referencedMedia, productCount, generatedAt: new Date().toISOString() };
+  return {
+    site,
+    pages,
+    media,
+    referencedMedia,
+    productCount,
+    comments,
+    themes,
+    plugins,
+    spamCount,
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 // Drafts/private content is kept but routed to its own folder so it can never be
@@ -221,6 +370,7 @@ export interface InventoryEntry {
   file: string;
   words: number;
   images: number;
+  fields: MetaField[];
 }
 
 export interface Counts {
@@ -244,6 +394,7 @@ export function buildInventory(res: RecoverResult) {
     file: pageFilePath(p),
     words: p.markdown ? p.markdown.split(/\s+/).filter(Boolean).length : 0,
     images: p.images.length,
+    fields: p.fields,
   }));
   const counts: Counts = {
     published: byStatus("publish"),
@@ -256,9 +407,15 @@ export function buildInventory(res: RecoverResult) {
   return { site: res.site, generatedAt: res.generatedAt, counts, entries };
 }
 
-/** Markdown file body with YAML frontmatter for one recovered page. */
+/** Markdown file body with YAML frontmatter for one recovered page. Custom
+ * fields (jobs, lessons, events, ACF, …) are emitted as a `fields:` map so the
+ * full record — not just title/body — survives the export. */
 export function pageToMarkdownFile(p: RecoveredPage): string {
-  const esc = (v: string) => `"${(v || "").replace(/"/g, '\\"')}"`;
+  const esc = (v: string) => `"${(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const fieldLines =
+    p.fields.length > 0
+      ? ["fields:", ...p.fields.map((f) => `  ${esc(f.label)}: ${esc(f.value)}`)]
+      : [];
   const fm = [
     "---",
     `title: ${esc(p.title)}`,
@@ -267,6 +424,7 @@ export function pageToMarkdownFile(p: RecoveredPage): string {
     `status: ${p.status}`,
     `date: ${esc(p.date)}`,
     p.guid ? `original_url: ${esc(p.guid)}` : "",
+    ...fieldLines,
     "---",
     "",
   ].filter(Boolean).join("\n");
