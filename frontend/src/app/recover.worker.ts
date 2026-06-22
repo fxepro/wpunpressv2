@@ -21,7 +21,10 @@ import {
   type RecoveredComment,
   type ThemeInfo,
   type PluginInfo,
+  type ProductPreview,
+  type FontInfo,
 } from "@unpress/engine";
+import { PREVIEW } from "../lib/limits";
 
 type RecoverResult = ReturnType<typeof recover>;
 type Inventory = ReturnType<typeof buildInventory>;
@@ -40,14 +43,20 @@ export type WorkerResponse =
       categories: Category[];
       structure: SiteStructure;
       productCount: number;
+      productSample: ProductPreview[];
       comments: RecoveredComment[];
+      /** Full comment count (preview shows only the first PREVIEW.comments). */
+      commentsTotal: number;
       themes: ThemeInfo[];
+      fonts: FontInfo;
       plugins: PluginInfo[];
       spamCount: number;
       media: {
         count: number;
         bytes: number;
         files: string[];
+        /** Full media file count (preview lists only the first PREVIEW.images). */
+        filesTotal: number;
         thumbs: MediaThumb[];
         /** Images referenced in the DB but not present as files (manifest). */
         referenced: string[];
@@ -78,7 +87,7 @@ function watermark(md: string): string {
     md +
     "\n\n---\n\n" +
     "> 🟢 Recovered free with **Unpress** — this is a 1-page sample.\n" +
-    "> Unlock your whole site (every page, post & photo) at unpress.app\n"
+    "> Get your whole site (every page, post & photo) at unpress.app\n"
   );
 }
 
@@ -166,14 +175,20 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 
     let mediaBytes = 0;
     for (const f of res.media) mediaBytes += f.data.length;
-    const files = res.media.map((m) => m.path);
+    const allFiles = res.media.map((m) => m.path);
     const thumbs: MediaThumb[] = res.media
       .filter((m) => IMG_RE.test(m.path))
-      .slice(0, 18)
+      .slice(0, PREVIEW.images)
       .map((m) => ({
         name: m.path,
         blob: new Blob([m.data.slice()], { type: mime(m.path) }),
       }));
+
+    // Preview gating: full COUNTS cross to the UI, but only the first few ITEMS
+    // of each kind — the full content stays in the worker until paid export.
+    const limit = (c: Category) =>
+      c.items.slice(0, c.key === "pages" ? PREVIEW.pages : c.key === "posts" ? PREVIEW.posts : PREVIEW.items);
+    const previewCategories: Category[] = cat.categories.map((c) => ({ ...c, items: limit(c) }));
 
     const first = res.pages[0];
     const sample = first
@@ -185,17 +200,21 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       ok: true,
       site: res.site,
       counts: inv.counts,
-      categories: cat.categories,
+      categories: previewCategories,
       structure: cat.structure,
       productCount: cat.productCount,
-      comments: res.comments,
+      productSample: res.productSample,
+      comments: res.comments.slice(0, PREVIEW.comments),
+      commentsTotal: res.comments.length,
       themes: res.themes,
+      fonts: res.fonts,
       plugins: res.plugins,
       spamCount: res.spamCount,
       media: {
         count: res.media.length,
         bytes: mediaBytes,
-        files,
+        files: allFiles.slice(0, PREVIEW.images),
+        filesTotal: allFiles.length,
         thumbs,
         referenced: res.referencedMedia,
       },

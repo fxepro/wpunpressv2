@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { WorkerResponse } from "./recover.worker";
+import { sizeError, sha256Hex, checkParse } from "../lib/limits";
 import type {
   Category,
   SiteStructure,
@@ -10,6 +11,8 @@ import type {
   RecoveredComment,
   ThemeInfo,
   PluginInfo,
+  ProductPreview,
+  FontInfo,
 } from "@unpress/engine";
 
 type Status = "idle" | "working" | "done" | "error";
@@ -57,6 +60,7 @@ interface MediaState {
   count: number;
   bytes: number;
   files: string[];
+  filesTotal: number;
   thumbs: { name: string; url: string }[];
   referenced: string[];
 }
@@ -67,8 +71,11 @@ interface Result {
   categories: Category[];
   structure: SiteStructure;
   productCount: number;
+  productSample: ProductPreview[];
   comments: RecoveredComment[];
+  commentsTotal: number;
   themes: ThemeInfo[];
+  fonts: FontInfo;
   plugins: PluginInfo[];
   spamCount: number;
   media: MediaState;
@@ -101,12 +108,31 @@ export default function Home() {
   };
 
   const handleFile = useCallback(async (file: File) => {
+    // Free-tier file-size cap (cheap pre-check before reading anything).
+    const tooBig = sizeError(file.size);
+    if (tooBig) {
+      setFileName(file.name);
+      setError(tooBig);
+      setStatus("error");
+      return;
+    }
+
     workerRef.current?.terminate();
     setStatus("working");
     setError("");
     setResult(null);
     setEntitled(false);
     setFileName(file.name);
+
+    const buf = await file.arrayBuffer();
+    // Hash → daily free-recovery limit (re-parsing the same file is free).
+    const hash = await sha256Hex(buf);
+    const rl = checkParse(hash);
+    if (!rl.allowed) {
+      setError(rl.reason ?? "Daily free limit reached.");
+      setStatus("error");
+      return;
+    }
 
     const worker = new Worker(new URL("./recover.worker.ts", import.meta.url));
     workerRef.current = worker;
@@ -129,14 +155,18 @@ export default function Home() {
         categories: data.categories,
         structure: data.structure,
         productCount: data.productCount,
+        productSample: data.productSample,
         comments: data.comments,
+        commentsTotal: data.commentsTotal,
         themes: data.themes,
+        fonts: data.fonts,
         plugins: data.plugins,
         spamCount: data.spamCount,
         media: {
           count: data.media.count,
           bytes: data.media.bytes,
           files: data.media.files,
+          filesTotal: data.media.filesTotal,
           thumbs: data.media.thumbs.map((t) => ({ name: t.name, url: URL.createObjectURL(t.blob) })),
           referenced: data.media.referenced,
         },
@@ -149,7 +179,7 @@ export default function Home() {
       setStatus("error");
     };
 
-    const buf = await file.arrayBuffer();
+    // `buf` was already read above (for hashing); transfer it to the worker.
     worker.postMessage(
       { buffer: buf, includeDrafts: includeDraftsRef.current, filename: file.name },
       [buf],
@@ -332,7 +362,7 @@ export default function Home() {
           <div className="step">
             <span className="num">3</span>
             <h3>Download your site</h3>
-            <p>Unlock the full export — clean content + all media — for ${PRICE} per website.</p>
+            <p>Get the full export — clean content + all media — for ${PRICE} per website.</p>
           </div>
         </div>
       </section>
@@ -471,15 +501,17 @@ function Results({
   onSample: () => void;
   onReset: () => void;
 }) {
-  const tabs: { key: string; label: string; count?: number; locked?: boolean }[] = [
-    { key: "structure", label: "File structure" },
-    ...result.categories.map((c) => ({ key: c.key, label: c.label, count: c.count })),
-    { key: "media", label: "Media", count: result.media.count || result.media.referenced.length },
-    ...(result.comments.length ? [{ key: "comments", label: "Comments", count: result.comments.length }] : []),
-    ...(result.themes.length ? [{ key: "appearance", label: "Appearance", count: result.themes.length }] : []),
-    ...(result.plugins.length ? [{ key: "plugins", label: "Plugins", count: result.plugins.length }] : []),
-    { key: "products", label: "Store", count: result.productCount, locked: true },
+  const hasAppearance = result.themes.length > 0 || result.fonts.families.length > 0;
+  const tabs: { key: string; label: string; count?: number; locked?: boolean; group: string }[] = [
+    { key: "structure", label: "File structure", group: "Overview" },
+    ...result.categories.map((c) => ({ key: c.key, label: c.label, count: c.count, group: "Content" })),
+    { key: "media", label: "Media", count: result.media.count || result.media.referenced.length, group: "Site" },
+    ...(result.commentsTotal ? [{ key: "comments", label: "Comments", count: result.commentsTotal, group: "Site" }] : []),
+    ...(hasAppearance ? [{ key: "appearance", label: "Appearance", count: result.themes.length + result.fonts.families.length, group: "Site" }] : []),
+    ...(result.plugins.length ? [{ key: "plugins", label: "Plugins", count: result.plugins.length, group: "Site" }] : []),
+    { key: "products", label: "Store", count: result.productCount, locked: true, group: "Site" },
   ];
+  const GROUPS = ["Overview", "Content", "Site"];
   const [tab, setTab] = useState("structure");
   const c = result.counts;
 
@@ -500,7 +532,7 @@ function Results({
               ? "Building your zip…"
               : entitled
                 ? "↓ Download (.zip)"
-                : `Unlock & download — $${PRICE}`}
+                : `Download — $${PRICE}`}
           </button>
           {result.sample && (
             <button className="btn-ghost" onClick={onSample}>
@@ -510,31 +542,46 @@ function Results({
         </div>
       </div>
 
-      <div className="tabs">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            className={`tab ${tab === t.key ? "active" : ""}`}
-            onClick={() => setTab(t.key)}
-          >
-            {t.locked && <span className="lock">🔒</span>}
-            {t.label}
-            {typeof t.count === "number" && <span className="pill">{t.count}</span>}
+      <div className="results-body">
+        <aside className="tab-rail">
+          {GROUPS.map((g) => {
+            const inGroup = tabs.filter((t) => t.group === g);
+            if (!inGroup.length) return null;
+            return (
+              <div className="rail-group" key={g}>
+                <div className="rail-label">{g}</div>
+                {inGroup.map((t) => (
+                  <button
+                    key={t.key}
+                    className={`rail-tab ${tab === t.key ? "active" : ""}`}
+                    onClick={() => setTab(t.key)}
+                  >
+                    {t.locked && <span className="lock">🔒</span>}
+                    <span className="rail-tab-label">{t.label}</span>
+                    {typeof t.count === "number" && <span className="pill">{t.count}</span>}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </aside>
+
+        <div className="tab-panel">
+          {tab === "structure" && <StructureTab structure={result.structure} spamCount={result.spamCount} />}
+          {result.categories.map(
+            (cat) => tab === cat.key && <ItemList key={cat.key} items={cat.items} total={cat.count} />,
+          )}
+          {tab === "media" && <MediaTab media={result.media} />}
+          {tab === "comments" && <CommentsTab comments={result.comments} total={result.commentsTotal} />}
+          {tab === "appearance" && <AppearanceTab themes={result.themes} fonts={result.fonts} />}
+          {tab === "plugins" && <PluginsTab plugins={result.plugins} />}
+          {tab === "products" && <ProductsTab count={result.productCount} sample={result.productSample} />}
+
+          <button onClick={onReset} className="recover-another">
+            ← Recover another backup
           </button>
-        ))}
+        </div>
       </div>
-
-      {tab === "structure" && <StructureTab structure={result.structure} spamCount={result.spamCount} />}
-      {result.categories.map((cat) => tab === cat.key && <ItemList key={cat.key} items={cat.items} />)}
-      {tab === "media" && <MediaTab media={result.media} />}
-      {tab === "comments" && <CommentsTab comments={result.comments} />}
-      {tab === "appearance" && <AppearanceTab themes={result.themes} />}
-      {tab === "plugins" && <PluginsTab plugins={result.plugins} />}
-      {tab === "products" && <ProductsTab count={result.productCount} />}
-
-      <button onClick={onReset} className="recover-another">
-        ← Recover another backup
-      </button>
     </div>
   );
 }
@@ -575,46 +622,59 @@ function TreeItem({ node }: { node: TreeNode }) {
   );
 }
 
-function ItemList({ items }: { items: Category["items"] }) {
+function MoreLocked({ hidden, noun }: { hidden: number; noun: string }) {
+  if (hidden <= 0) return null;
   return (
-    <div className="itemgrid">
-      {items.map((it) => (
-        <div className="itemcard" key={it.slug + it.title}>
-          <div className="row">
-            <h4>{it.title}</h4>
-            {it.status === "draft" ? (
-              <span className="badge draft">Draft</span>
-            ) : (
-              <span className="badge type">{it.type}</span>
-            )}
-          </div>
-          {it.fields.length > 0 && (
-            <dl className="fields">
-              {it.fields.slice(0, 6).map((f) => (
-                <div className="field" key={f.key}>
-                  <dt>{f.label}</dt>
-                  <dd>{f.value}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-          <p>{it.excerpt || "—"}</p>
-          <div className="foot">
-            {it.words} words · {it.images} images
-          </div>
-        </div>
-      ))}
+    <div className="more-locked">
+      🔒 +{hidden.toLocaleString()} more {noun}
     </div>
   );
 }
 
-function CommentsTab({ comments }: { comments: RecoveredComment[] }) {
-  if (!comments.length) return <p className="muted-note">No comments found in this backup.</p>;
+function ItemList({ items, total }: { items: Category["items"]; total: number }) {
+  const noun = items[0]?.type === "page" ? "pages" : items[0]?.type === "post" ? "posts" : "items";
   return (
     <div>
-      <p className="muted-note mb">{comments.length} approved comments recovered.</p>
       <div className="itemgrid">
-        {comments.slice(0, 200).map((cm) => (
+        {items.map((it) => (
+          <div className="itemcard" key={it.slug + it.title}>
+            <div className="row">
+              <h4>{it.title}</h4>
+              {it.status === "draft" ? (
+                <span className="badge draft">Draft</span>
+              ) : (
+                <span className="badge type">{it.type}</span>
+              )}
+            </div>
+            {it.fields.length > 0 && (
+              <dl className="fields">
+                {it.fields.slice(0, 6).map((f) => (
+                  <div className="field" key={f.key}>
+                    <dt>{f.label}</dt>
+                    <dd>{f.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            <p>{it.excerpt || "—"}</p>
+            <div className="foot">
+              {it.words} words · {it.images} images
+            </div>
+          </div>
+        ))}
+      </div>
+      <MoreLocked hidden={total - items.length} noun={noun} />
+    </div>
+  );
+}
+
+function CommentsTab({ comments, total }: { comments: RecoveredComment[]; total: number }) {
+  if (!total) return <p className="muted-note">No comments found in this backup.</p>;
+  return (
+    <div>
+      <p className="muted-note mb">{total.toLocaleString()} approved comments recovered.</p>
+      <div className="itemgrid">
+        {comments.map((cm) => (
           <div className="itemcard" key={cm.id}>
             <div className="row">
               <h4>{cm.author}</h4>
@@ -625,26 +685,49 @@ function CommentsTab({ comments }: { comments: RecoveredComment[] }) {
           </div>
         ))}
       </div>
+      <MoreLocked hidden={total - comments.length} noun="comments" />
     </div>
   );
 }
 
-function AppearanceTab({ themes }: { themes: ThemeInfo[] }) {
-  if (!themes.length) return <p className="muted-note">No themes found in this backup.</p>;
+function AppearanceTab({ themes, fonts }: { themes: ThemeInfo[]; fonts: FontInfo }) {
+  if (!themes.length && !fonts.families.length) {
+    return <p className="muted-note">No themes or fonts found in this backup.</p>;
+  }
   return (
     <div>
-      <p className="muted-note mb">
-        {themes.length} theme{themes.length === 1 ? "" : "s"} found. The active theme is informational
-        only — Unpress recovers your content, not the disposable theme.
-      </p>
-      <div className="filelist">
-        {themes.map((t) => (
-          <div key={t.slug}>
-            {t.name}
-            {t.active && <span className="badge type" style={{ marginLeft: 8 }}>Active</span>}
+      {themes.length > 0 && (
+        <>
+          <h4 className="ap-h">Themes</h4>
+          <p className="muted-note mb">
+            {themes.length} theme{themes.length === 1 ? "" : "s"} found. Informational only — Unpress
+            recovers your content, not the disposable theme.
+          </p>
+          <div className="filelist">
+            {themes.map((t) => (
+              <div key={t.slug}>
+                {t.name}
+                {t.active && <span className="badge type" style={{ marginLeft: 8 }}>Active</span>}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
+
+      {fonts.families.length > 0 && (
+        <>
+          <h4 className="ap-h" style={{ marginTop: 24 }}>Fonts</h4>
+          <p className="muted-note mb">
+            {fonts.families.length} font famil{fonts.families.length === 1 ? "y" : "ies"} · {fonts.faces}{" "}
+            face{fonts.faces === 1 ? "" : "s"} (WordPress Font Library).
+          </p>
+          <div className="filelist">
+            {fonts.families.map((f) => (
+              <div key={f}>{f}</div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -738,25 +821,52 @@ function MediaTab({ media }: { media: MediaState }) {
           <div key={f}>{f}</div>
         ))}
       </div>
+      <MoreLocked hidden={media.filesTotal - media.files.length} noun="images & files" />
     </div>
   );
 }
 
-function ProductsTab({ count }: { count: number }) {
+function ProductsTab({ count, sample }: { count: number; sample: ProductPreview[] }) {
   return (
-    <div className="locked">
-      <div className="lockicon">🛍️</div>
-      <h3>WooCommerce store recovery</h3>
-      <p>
-        {count > 0
-          ? `We found ${count} product${count === 1 ? "" : "s"} in this backup. `
-          : "If this backup contains a shop, "}
-        unlock products, variations, prices, SKUs and categories as an import-ready export — a
-        +${WOO} add-on to your download.
-      </p>
-      <button className="pro-btn" onClick={() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" })}>
-        Add store export — +${WOO}
-      </button>
+    <div>
+      {sample.length > 0 && (
+        <>
+          <p className="muted-note mb">
+            {count.toLocaleString()} product{count === 1 ? "" : "s"} found — here&apos;s a sample
+            (names only · no pricing or inventory in the preview):
+          </p>
+          <div className="itemgrid">
+            {sample.map((p) => (
+              <div className="itemcard" key={p.slug + p.title}>
+                <div className="row">
+                  <h4>{p.title}</h4>
+                  <span className="badge type">product</span>
+                </div>
+                <dl className="fields">
+                  <div className="field"><dt>Price</dt><dd>🔒 locked</dd></div>
+                  <div className="field"><dt>Inventory</dt><dd>🔒 locked</dd></div>
+                </dl>
+              </div>
+            ))}
+          </div>
+          <MoreLocked hidden={count - sample.length} noun="products" />
+        </>
+      )}
+
+      <div className="locked" style={{ marginTop: sample.length ? 20 : 0 }}>
+        <div className="lockicon">🛍️</div>
+        <h3>WooCommerce store recovery</h3>
+        <p>
+          {count > 0
+            ? `All ${count} product${count === 1 ? "" : "s"}, `
+            : "If this backup contains a shop, products come "}
+          with variations, prices, SKUs and categories as an import-ready export — a +${WOO} add-on
+          to your download.
+        </p>
+        <button className="pro-btn" onClick={() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" })}>
+          Add store export — +${WOO}
+        </button>
+      </div>
     </div>
   );
 }

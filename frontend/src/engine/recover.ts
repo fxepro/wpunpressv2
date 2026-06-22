@@ -93,10 +93,25 @@ export interface ThemeInfo {
   active: boolean;
 }
 
+/** WP 6.5+ Font Library summary — shown under Appearance, not as content. */
+export interface FontInfo {
+  families: string[];
+  faces: number;
+}
+
 export interface PluginInfo {
   slug: string;
   active: boolean;
 }
+
+/** A teaser product for the preview — name only. Pricing/SKU/stock (in postmeta)
+ * are deliberately NOT recovered for products until the store add-on is bought. */
+export interface ProductPreview {
+  title: string;
+  slug: string;
+}
+
+const PRODUCT_SAMPLE = 5;
 
 export interface MediaFile {
   path: string; // local path, e.g. media/2023/04/logo.png
@@ -117,6 +132,8 @@ const SKIP_TYPES = new Set([
   "revision", "nav_menu_item", "attachment", "custom_css", "customize_changeset",
   "oembed_cache", "user_request", "wp_block", "wp_template", "wp_template_part",
   "wp_global_styles", "wp_navigation", "wpcode",
+  // WP 6.5+ Font Library — core Appearance, folded into the Appearance tab (not content)
+  "wp_font_family", "wp_font_face",
   // Avada / Fusion builder internals
   "fusion_element", "fusion_template", "fusion_tb_layout", "fusion_tb_section",
   "fusion_form", "fusion_icons", "fusion_form_submission", "fma_blocks",
@@ -142,10 +159,14 @@ export interface RecoverResult {
   referencedMedia: string[];
   /** Count of WooCommerce products found (gated — paid tier). */
   productCount: number;
+  /** Up to PRODUCT_SAMPLE teaser product names for the preview (no pricing). */
+  productSample: ProductPreview[];
   /** Approved comments recovered from wp_comments. */
   comments: RecoveredComment[];
   /** Installed themes (with the active one flagged). */
   themes: ThemeInfo[];
+  /** Font Library families/faces (Appearance, not content). */
+  fonts: FontInfo;
   /** Installed plugins (with active ones flagged). */
   plugins: PluginInfo[];
   /** Count of injected casino/gambling spam posts that were filtered out. */
@@ -280,11 +301,29 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
   // First pass: keep every content row (any post type), gate products, drop
   // injected casino-spam posts. Then join postmeta only for the rows we kept.
   const contentRows: Record<string, string>[] = [];
+  const productSample: ProductPreview[] = [];
+  const fontFamilies: string[] = [];
+  let fontFaces = 0;
   let productCount = 0;
   let spamCount = 0;
   for (const r of rowsToObjects(dbText, prefix + "posts", POST_COLS)) {
+    // WP Font Library → Appearance (collected here, not surfaced as content).
+    if (r.post_type === "wp_font_family") {
+      if (r.post_status === "publish") fontFamilies.push(r.post_title || r.post_name);
+      continue;
+    }
+    if (r.post_type === "wp_font_face") {
+      fontFaces++;
+      continue;
+    }
     if (PRODUCT_TYPES.has(r.post_type)) {
-      if (r.post_status === "publish") productCount++;
+      // Count/sample only top-level products (not variations); name only.
+      if (r.post_type === "product" && r.post_status === "publish") {
+        productCount++;
+        if (productSample.length < PRODUCT_SAMPLE) {
+          productSample.push({ title: r.post_title || "(untitled product)", slug: r.post_name });
+        }
+      }
       continue;
     }
     if (!isContentType(r.post_type)) continue;
@@ -340,8 +379,10 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
     media,
     referencedMedia,
     productCount,
+    productSample,
     comments,
     themes,
+    fonts: { families: fontFamilies, faces: fontFaces },
     plugins,
     spamCount,
     generatedAt: new Date().toISOString(),

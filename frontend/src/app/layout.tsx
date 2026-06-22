@@ -50,6 +50,7 @@ export default function RootLayout({
               <Link href="/#how">How it works</Link>
               <Link href="/#formats">Formats</Link>
               <Link href="/#pricing">Pricing</Link>
+              <Link href="/limits">Limits &amp; pricing</Link>
             </span>
           </div>
         </footer>
