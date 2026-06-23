@@ -45,8 +45,15 @@ a { color: inherit; }
 
 /* ── nav ── */
 .brandbar { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 18px 28px; }
-.wordmark { display: flex; align-items: center; gap: 1px; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.04em; font-family: var(--font-sora), sans-serif; }
-.wordmark .dot { color: var(--accent); }
+.wordmark { display: inline-flex; align-items: center; gap: 10px; font-size: 1.5rem; font-weight: 800;
+  letter-spacing: -0.045em; font-family: var(--font-sora), sans-serif; color: var(--ink); }
+.wm-badge { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  border-radius: 9px; background: var(--accent); box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 38%, transparent);
+  transition: transform 0.18s ease; }
+.wordmark:hover .wm-badge { transform: translateY(-2px); }
+.wm-badge svg { width: 18px; height: 18px; fill: #fff; }
+.wm-text { line-height: 1; }
+.wm-mid { color: var(--accent); margin: 0 0.5px; }
 .brandbar nav { display: flex; gap: 26px; align-items: center; font-size: 0.93rem; font-weight: 500; }
 .brandbar nav a { color: var(--muted); }
 .brandbar nav a:hover { color: var(--ink); }

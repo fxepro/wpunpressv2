@@ -28,8 +28,16 @@ export default function RootLayout({
           leaves your browser.
         </div>
         <header className="brandbar">
-          <Link href="/" className="wordmark">
-            un<span className="dot">press</span>
+          <Link href="/" className="wordmark" aria-label="Unpress home">
+            <span className="wm-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 3.2 19 11.4h-4v5.1H9v-5.1H5z" />
+                <rect x="6" y="19.2" width="12" height="2.4" rx="1.2" />
+              </svg>
+            </span>
+            <span className="wm-text">
+              un<span className="wm-mid">·</span>press
+            </span>
           </Link>
           <nav>
             <Link href="/#how">How it works</Link>
