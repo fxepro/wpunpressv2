@@ -541,7 +541,7 @@ function Results({
               ? "Building your zip…"
               : entitled
                 ? "↓ Download (.zip)"
-                : `Download — $${PRICE}`}
+                : "Download"}
           </button>
           {result.sample && (
             <button className="btn-ghost" onClick={onSample}>
