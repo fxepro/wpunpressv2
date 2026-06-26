@@ -86,7 +86,7 @@ export default function CheckoutModal({
 
         <div className="co-head">
           <h3 className="co-title">Download your full site</h3>
-          <p className="co-sub">One-time payment. Your backup never leaves your browser.</p>
+          <p className="co-sub">One-time payment. Instant download.</p>
         </div>
 
         {/* order summary */}

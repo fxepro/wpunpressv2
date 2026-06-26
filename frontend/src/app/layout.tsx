@@ -14,7 +14,7 @@ const sora = Sora({
 export const metadata: Metadata = {
   title: "Unpress — your website, set free",
   description:
-    "Drop in your old WordPress .wpress backup and get your content and photos back — instantly, in your browser. Your file never leaves your computer.",
+    "Drop in your old WordPress .wpress backup and get your content and photos back — instantly. Every page, post, image and more, recovered.",
 };
 
 export default function RootLayout({
@@ -24,8 +24,7 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${sora.variable}`}>
       <body>
         <div className="banner">
-          🚀 <strong>Unpress</strong> — recover any dead WordPress backup, free. Your file never
-          leaves your browser.
+          🚀 <strong>Unpress</strong> — recover any dead WordPress backup, free.
         </div>
         <header className="brandbar">
           <Link href="/" className="wordmark" aria-label="Unpress home">

@@ -32,8 +32,8 @@ const FORMATS = [
 
 const FAQS = [
   {
-    q: "Is my backup uploaded anywhere?",
-    a: "No. Unpress reads the file entirely inside your browser — it never touches a server. We literally couldn't see it if we wanted to. That's the whole point.",
+    q: "Is my data safe?",
+    a: "Yes. Your recovery is private and secure — we don't sell data, run ads, or require an account to use Unpress.",
   },
   {
     q: "Which backup formats work?",
@@ -260,7 +260,7 @@ export default function Home() {
           {status === "working" && (
             <div className="processing">
               <Spinner />
-              <p>Recovering {fileName} … reading in your browser</p>
+              <p>Recovering {fileName} …</p>
             </div>
           )}
           {status === "error" && (
@@ -301,7 +301,7 @@ export default function Home() {
           </h1>
           <p className="hero-sub">
             Drop your old WordPress backup — any format — and get every page, post and photo back.
-            In your browser. No WordPress, no hosting, no developer.
+            No WordPress, no hosting, no developer.
           </p>
 
           <div className="drop-wrap">
@@ -325,7 +325,7 @@ export default function Home() {
               <div className="drop-icon">⬆</div>
               <div className="drop-title">Drop your backup here</div>
               <div className="drop-note">
-                .wpress · .zip · .tar.gz · .sql · .xml — auto-detected · nothing is uploaded
+                .wpress · .zip · .tar.gz · .sql · .xml — auto-detected
               </div>
               <button className="btn-primary drop-btn" type="button">
                 Choose a file
@@ -340,7 +340,7 @@ export default function Home() {
               Also recover drafts &amp; unpublished content
             </label>
             <div className="trust">
-              <span>🔒 Runs in your browser</span>
+              <span>🔒 Private &amp; secure</span>
               <span>⚡ Instant preview</span>
               <span>🧩 Any theme or builder</span>
             </div>
@@ -359,7 +359,7 @@ export default function Home() {
           {[
             ["🔍", "Auto-detects any format", "Drop .wpress, zip, tar.gz, .sql or a WP export. No menus, no guessing — we read the bytes."],
             ["⚡", "See everything instantly", "Every page, post and photo, organized into tabs with your site structure mapped."],
-            ["🔒", "100% in your browser", "Your backup never leaves your computer. No upload, no account, no risk."],
+            ["🔒", "Private & secure", "Your backup stays yours — no account, no risk."],
             ["⬇️", "Take it with you", "Clean Markdown + HTML + every original image, ready for any modern site."],
           ].map(([icon, title, body]) => (
             <div className="vcard" key={title}>
@@ -378,7 +378,7 @@ export default function Home() {
           <div className="step">
             <span className="num">1</span>
             <h3>Drop your backup</h3>
-            <p>Any WordPress backup format. It opens right here in your browser — nothing uploads.</p>
+            <p>Any WordPress backup format. Drop it in and it&apos;s recovered in seconds.</p>
           </div>
           <div className="step">
             <span className="num">2</span>
@@ -447,10 +447,10 @@ export default function Home() {
             <div className="price">$0</div>
             <p className="desc">See everything, every time.</p>
             <ul>
-              <li>Recover any format in your browser</li>
+              <li>Recover any backup format</li>
               <li>Every page, post, structure &amp; photo</li>
               <li>One free watermarked sample page</li>
-              <li>100% private — nothing uploaded</li>
+              <li>100% private</li>
             </ul>
             <button className="cta" onClick={scrollToDrop}>Try it now</button>
           </div>
