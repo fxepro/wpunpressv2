@@ -22,6 +22,9 @@ const COMMENT_COLS = [
   "comment_content", "comment_karma", "comment_approved", "comment_agent",
   "comment_type", "comment_parent", "user_id",
 ];
+const TERM_COLS = ["term_id", "name", "slug", "term_group"];
+const TERM_TAX_COLS = ["term_taxonomy_id", "term_id", "taxonomy", "description", "parent", "count"];
+const TERM_REL_COLS = ["object_id", "term_taxonomy_id", "term_order"];
 
 const MEDIA_RE = /\.(jpe?g|png|webp|gif|svg|ico|bmp|avif|mp4|webm|pdf|docx?|pptx?|xlsx?)$/i;
 // Real media-library uploads live under uploads/<year>/<month>/ — this skips
@@ -113,6 +116,26 @@ export interface ProductPreview {
 
 const PRODUCT_SAMPLE = 6;
 
+/** A fully-recovered WooCommerce product or variation (paid store add-on). */
+export interface RecoveredProduct {
+  id: string;
+  kind: "product" | "variation";
+  parentId: string;
+  name: string;
+  sku: string;
+  regularPrice: string;
+  salePrice: string;
+  price: string;
+  stockStatus: string;
+  stock: string;
+  categories: string[];
+  attributes: Record<string, string>;
+  shortDescription: string;
+  description: string;
+  image: string;
+  images: string[];
+}
+
 export interface MediaFile {
   path: string; // local path, e.g. media/2023/04/logo.png
   data: Uint8Array;
@@ -161,6 +184,8 @@ export interface RecoverResult {
   productCount: number;
   /** Up to PRODUCT_SAMPLE teaser product names for the preview (no pricing). */
   productSample: ProductPreview[];
+  /** Fully-recovered products + variations — only emitted with the paid store add-on. */
+  products: RecoveredProduct[];
   /** Approved comments recovered from wp_comments. */
   comments: RecoveredComment[];
   /** Installed themes (with the active one flagged). */
@@ -193,6 +218,63 @@ function findDatabaseFile(files: { path: string; data: Uint8Array }[]) {
       .decode(e.data.subarray(0, Math.min(4096, e.data.length)))
       .toLowerCase();
     return head.includes("insert into") || head.includes("create table") || head.includes("mysql dump");
+  });
+}
+
+/** Map object_id → term names for one taxonomy (e.g. product_cat). */
+function resolveTaxonomy(dbText: string, prefix: string, taxonomy: string): Map<string, string[]> {
+  const termName = new Map<string, string>();
+  for (const t of rowsToObjects(dbText, prefix + "terms", TERM_COLS)) termName.set(t.term_id, t.name);
+  const ttToTerm = new Map<string, string>();
+  for (const tt of rowsToObjects(dbText, prefix + "term_taxonomy", TERM_TAX_COLS)) {
+    if (tt.taxonomy === taxonomy) ttToTerm.set(tt.term_taxonomy_id, tt.term_id);
+  }
+  const out = new Map<string, string[]>();
+  for (const rel of rowsToObjects(dbText, prefix + "term_relationships", TERM_REL_COLS)) {
+    const termId = ttToTerm.get(rel.term_taxonomy_id);
+    if (!termId) continue;
+    const name = termName.get(termId);
+    if (!name) continue;
+    const arr = out.get(rel.object_id) ?? [];
+    arr.push(name);
+    out.set(rel.object_id, arr);
+  }
+  return out;
+}
+
+/** Turn product/variation rows + their postmeta into full RecoveredProducts. */
+function buildProducts(
+  productRows: Record<string, string>[],
+  metaByPost: Map<string, Record<string, string>>,
+  cats: Map<string, string[]>,
+  attachmentUrl: Map<string, string>,
+): RecoveredProduct[] {
+  return productRows.map((r) => {
+    const m = metaByPost.get(r.ID) || {};
+    const cleaned = cleanContent(r.post_content || "");
+    const attributes: Record<string, string> = {};
+    for (const [k, v] of Object.entries(m)) {
+      if (k.startsWith("attribute_") && v) attributes[k.slice("attribute_".length)] = v;
+    }
+    const thumbId = m["_thumbnail_id"];
+    return {
+      id: r.ID,
+      kind: r.post_type === "product_variation" ? "variation" : "product",
+      parentId: r.post_parent && r.post_parent !== "0" ? r.post_parent : "",
+      name: r.post_title || "",
+      sku: m["_sku"] || "",
+      regularPrice: m["_regular_price"] || "",
+      salePrice: m["_sale_price"] || "",
+      price: m["_price"] || "",
+      stockStatus: m["_stock_status"] || "",
+      stock: m["_stock"] || "",
+      categories: cats.get(r.ID) || [],
+      attributes,
+      shortDescription: cleanContent(r.post_excerpt || "").markdown,
+      description: cleaned.markdown,
+      image: thumbId ? attachmentUrl.get(thumbId) || "" : "",
+      images: cleaned.images,
+    };
   });
 }
 
@@ -301,6 +383,8 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
   // First pass: keep every content row (any post type), gate products, drop
   // injected casino-spam posts. Then join postmeta only for the rows we kept.
   const contentRows: Record<string, string>[] = [];
+  const productRows: Record<string, string>[] = [];
+  const attachmentUrl = new Map<string, string>(); // attachment id → media path (for product images)
   const productSample: ProductPreview[] = [];
   const fontFamilies: string[] = [];
   let fontFaces = 0;
@@ -316,12 +400,18 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
       fontFaces++;
       continue;
     }
+    if (r.post_type === "attachment") {
+      if (r.guid) attachmentUrl.set(r.ID, rewriteUrls(r.guid));
+      continue;
+    }
     if (PRODUCT_TYPES.has(r.post_type)) {
-      // Count/sample only top-level products (not variations); name only.
-      if (r.post_type === "product" && r.post_status === "publish") {
-        productCount++;
-        if (productSample.length < PRODUCT_SAMPLE) {
-          productSample.push({ title: r.post_title || "(untitled product)", slug: r.post_name });
+      if (r.post_status === "publish") {
+        productRows.push(r); // full recovery (gated to the paid store add-on)
+        if (r.post_type === "product") {
+          productCount++;
+          if (productSample.length < PRODUCT_SAMPLE) {
+            productSample.push({ title: r.post_title || "(untitled product)", slug: r.post_name });
+          }
         }
       }
       continue;
@@ -336,8 +426,11 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
     contentRows.push(r);
   }
 
-  const keepIds = new Set(contentRows.map((r) => r.ID));
+  const keepIds = new Set([...contentRows, ...productRows].map((r) => r.ID));
   const metaByPost = parsePostMeta(dbText, prefix, keepIds);
+
+  const productCats = productRows.length ? resolveTaxonomy(dbText, prefix, "product_cat") : new Map();
+  const products = buildProducts(productRows, metaByPost, productCats, attachmentUrl);
 
   const pages: RecoveredPage[] = contentRows.map((r) => {
     const cleaned = cleanContent(r.post_content);
@@ -380,6 +473,7 @@ export function recover(bytes: Uint8Array, opts: RecoverOptions = {}): RecoverRe
     referencedMedia,
     productCount,
     productSample,
+    products,
     comments,
     themes,
     fonts: { families: fontFamilies, faces: fontFaces },

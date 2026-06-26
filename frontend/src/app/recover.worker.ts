@@ -23,6 +23,7 @@ import {
   type PluginInfo,
   type ProductPreview,
   type FontInfo,
+  type RecoveredProduct,
 } from "@unpress/engine";
 import { PREVIEW } from "../lib/limits";
 
@@ -69,7 +70,7 @@ export type WorkerResponse =
 
 type WorkerRequest =
   | { action?: "preview"; buffer: ArrayBuffer; includeDrafts: boolean; filename: string }
-  | { action: "export" };
+  | { action: "export"; store?: boolean };
 
 const IMG_RE = /\.(jpe?g|png|webp|gif|avif|bmp)$/i;
 const mime = (name: string) => {
@@ -100,7 +101,35 @@ function renderComments(comments: RecoveredComment[]): string {
   );
 }
 
-async function buildZip(res: RecoverResult, inv: Inventory): Promise<Blob> {
+function csvField(v: string): string {
+  return `"${(v ?? "").replace(/"/g, '""')}"`;
+}
+
+/** WooCommerce-importable product CSV (Type/SKU/Name/prices/categories/…). */
+function productsToCsv(products: RecoveredProduct[]): string {
+  const variableParents = new Set(
+    products.filter((p) => p.kind === "variation" && p.parentId).map((p) => p.parentId),
+  );
+  const headers = [
+    "Type", "SKU", "Name", "Published", "Short description", "Description",
+    "Regular price", "Sale price", "Stock status", "Stock", "Categories", "Images", "Parent", "Attributes",
+  ];
+  const rows = products.map((p) => {
+    const type = p.kind === "variation" ? "variation" : variableParents.has(p.id) ? "variable" : "simple";
+    const images = [p.image, ...p.images].filter(Boolean).join(", ");
+    const attrs = Object.entries(p.attributes).map(([k, v]) => `${k}: ${v}`).join(" | ");
+    return [
+      type, p.sku, p.name, "1", p.shortDescription, p.description,
+      p.regularPrice, p.salePrice, p.stockStatus, p.stock,
+      p.categories.join(", "), images,
+      p.kind === "variation" && p.parentId ? `id:${p.parentId}` : "",
+      attrs,
+    ].map(csvField).join(",");
+  });
+  return [headers.map(csvField).join(","), ...rows].join("\r\n") + "\r\n";
+}
+
+async function buildZip(res: RecoverResult, inv: Inventory, includeStore: boolean): Promise<Blob> {
   const zip = new JSZip();
   zip.file("inventory.json", JSON.stringify(inv, null, 2));
 
@@ -140,6 +169,12 @@ async function buildZip(res: RecoverResult, inv: Inventory): Promise<Blob> {
     ),
   );
 
+  // WooCommerce store export — only with the paid store add-on.
+  if (includeStore && res.products.length) {
+    zip.file("store/products.csv", productsToCsv(res.products));
+    zip.file("store/products.json", JSON.stringify(res.products, null, 2));
+  }
+
   for (const f of res.media) zip.file(f.path, f.data);
   return zip.generateAsync({ type: "blob", compression: "DEFLATE" });
 }
@@ -150,7 +185,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     // ---- Phase 2: paid export ----
     if (data.action === "export") {
       if (!cached || !cachedInv) throw new Error("Nothing to export — recover a backup first.");
-      const blob = await buildZip(cached, cachedInv);
+      const blob = await buildZip(cached, cachedInv, data.store === true);
       const msg: WorkerResponse = {
         kind: "export",
         ok: true,

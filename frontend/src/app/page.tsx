@@ -94,6 +94,7 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [checkout, setCheckout] = useState(false);
   const [checkoutStore, setCheckoutStore] = useState(false);
+  const [entitledStore, setEntitledStore] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const includeDraftsRef = useRef(includeDrafts);
@@ -199,14 +200,14 @@ export default function Home() {
     [handleFile],
   );
 
-  const requestExport = () => {
+  const requestExport = (store: boolean) => {
     if (!workerRef.current) return;
     setExporting(true);
-    workerRef.current.postMessage({ action: "export" });
+    workerRef.current.postMessage({ action: "export", store });
   };
 
   const onBuy = () => {
-    if (entitled) return requestExport();
+    if (entitled) return requestExport(entitledStore);
     setCheckoutStore(false);
     setCheckout(true); // open Stripe / PayPal checkout
   };
@@ -216,10 +217,11 @@ export default function Home() {
     setCheckout(true);
   };
 
-  const onPaid = () => {
+  const onPaid = (store: boolean) => {
     setEntitled(true);
+    setEntitledStore(store);
     setCheckout(false);
-    requestExport(); // worker still holds the parse — download fires immediately
+    requestExport(store); // worker still holds the parse — download fires immediately
   };
 
   const onSample = () => {

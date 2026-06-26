@@ -23,7 +23,7 @@ export default function CheckoutModal({
   storePrice: number;
   productCount: number;
   initialStore?: boolean;
-  onPaid: () => void;
+  onPaid: (store: boolean) => void;
   onClose: () => void;
 }) {
   const hasStripe = Boolean(STRIPE_PK);
@@ -68,7 +68,7 @@ export default function CheckoutModal({
       const d = await r.json();
       if (d.paid) {
         setStatus("paid");
-        onPaid();
+        onPaid(store);
       } else {
         setErr("Payment wasn't completed.");
         setStatus("error");
@@ -77,7 +77,7 @@ export default function CheckoutModal({
       setErr("Couldn't confirm the payment.");
       setStatus("error");
     }
-  }, [onPaid]);
+  }, [onPaid, store]);
 
   return (
     <div className="co-overlay" onClick={onClose}>
@@ -189,7 +189,7 @@ export default function CheckoutModal({
                           const d = await r.json();
                           if (d.paid) {
                             setStatus("paid");
-                            onPaid();
+                            onPaid(store);
                           } else {
                             setErr("Payment wasn't completed.");
                             setStatus("error");
