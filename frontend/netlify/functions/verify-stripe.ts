@@ -1,6 +1,11 @@
 import type { Handler } from "@netlify/functions";
 import Stripe from "stripe";
+import { z } from "zod";
 import { json, parseBody } from "./_lib";
+
+const Body = z.object({
+  sessionId: z.string().regex(/^cs_(test|live)_/, "Invalid session ID format"),
+});
 
 // Server-side confirmation that a Stripe session was actually paid. Never trust
 // the client for entitlement — this is the source of truth.
@@ -9,8 +14,9 @@ export const handler: Handler = async (event) => {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) return json(503, { error: "Stripe is not configured." });
 
-  const sessionId = parseBody(event.body).sessionId;
-  if (typeof sessionId !== "string") return json(400, { error: "Missing sessionId" });
+  const parsed = Body.safeParse(parseBody(event.body));
+  if (!parsed.success) return json(400, { error: "Invalid request body." });
+  const { sessionId } = parsed.data;
 
   const stripe = new Stripe(key);
   try {
@@ -20,6 +26,7 @@ export const handler: Handler = async (event) => {
       store: s.metadata?.store === "1",
     });
   } catch (err) {
-    return json(502, { error: err instanceof Error ? err.message : "Stripe error" });
+    console.error("[verify-stripe]", err);
+    return json(502, { error: "Could not confirm payment. Please try again." });
   }
 };

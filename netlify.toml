@@ -9,3 +9,15 @@
 
 [functions]
   node_bundler = "esbuild"
+
+[[redirects]]
+  from   = "http://wpunpress.com/*"
+  to     = "https://wpunpress.com/:splat"
+  status = 301
+  force  = true
+
+[[redirects]]
+  from   = "http://www.wpunpress.com/*"
+  to     = "https://wpunpress.com/:splat"
+  status = 301
+  force  = true

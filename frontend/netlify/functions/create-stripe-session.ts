@@ -1,6 +1,9 @@
 import type { Handler } from "@netlify/functions";
 import Stripe from "stripe";
-import { PRICE, json, parseBody } from "./_lib";
+import { z } from "zod";
+import { PRICE, checkRateLimit, getClientIp, json, parseBody } from "./_lib";
+
+const Body = z.object({ store: z.boolean().default(false) });
 
 // Creates an EMBEDDED Stripe Checkout session (no redirect — keeps the user on
 // the page so the in-browser recovery isn't lost). Returns a client secret.
@@ -9,8 +12,22 @@ export const handler: Handler = async (event) => {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) return json(503, { error: "Stripe is not configured." });
 
+  const parsed = Body.safeParse(parseBody(event.body));
+  if (!parsed.success) return json(400, { error: "Invalid request body." });
+  const { store } = parsed.data;
+
+  const ip = getClientIp(event.headers as Record<string, string | undefined>);
+  const product = store ? "site+store" : "site";
+  const rl = await checkRateLimit(ip, product);
+  if (!rl.allowed) {
+    return json(
+      429,
+      { error: "Too many checkout attempts. Please wait before trying again." },
+      { "Retry-After": String(rl.retryAfter ?? 3600) },
+    );
+  }
+
   const stripe = new Stripe(key);
-  const store = parseBody(event.body).store === true;
 
   const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = [
     {
@@ -43,6 +60,7 @@ export const handler: Handler = async (event) => {
     });
     return json(200, { clientSecret: session.client_secret, sessionId: session.id });
   } catch (err) {
-    return json(502, { error: err instanceof Error ? err.message : "Stripe error" });
+    console.error("[create-stripe-session]", err);
+    return json(502, { error: "Could not start checkout. Please try again." });
   }
 };

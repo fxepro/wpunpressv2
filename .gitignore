@@ -13,3 +13,6 @@ rebuilt-site/
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# Local Netlify folder
+.netlify

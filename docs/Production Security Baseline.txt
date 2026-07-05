@@ -1,0 +1,120 @@
+For a professional consumer-data website, implement this minimum production security baseline.
+
+1. Domain, DNS, and email security
+Control	Implement
+HTTPS everywhere	TLS only, redirect HTTP → HTTPS
+HSTS	Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+CAA	DNS record limiting which certificate authorities can issue certs
+SPF	Allow only your real mail senders
+DKIM	Sign outbound email
+DMARC	Start p=none, move to quarantine, then reject
+Separate mail domain	Use mail.domain.com or mg.domain.com for app emails
+
+CISA specifically recommends SPF/DMARC for internet-facing domains, and DMARC works with SPF/DKIM to reduce spoofing/phishing.
+
+2. HTTP security headers
+
+Set these globally:
+
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+X-Frame-Options: DENY
+Permissions-Policy: geolocation=(), microphone=(), camera=()
+
+CSP controls which resources browsers may load and helps reduce XSS risk; nosniff prevents MIME-type sniffing.
+
+3. Authentication and account security
+Area	Requirement
+Password storage	Use bcrypt or Argon2id, never plain text
+Password reset	Single-use token, expires in 15–30 minutes
+Forgot password limit	Limit by IP + email, e.g. 3–5 requests/hour
+Login limits	Rate-limit failed attempts by IP + account
+MFA	Optional for consumers, required for admins
+Admin panel	MFA, IP allowlist if possible, separate admin route
+Sessions	Secure, HttpOnly, SameSite cookies
+Email verification	Required before sensitive actions
+Breached passwords	Block common/breached passwords
+
+OWASP ASVS recommends anti-automation controls such as rate limits, soft lockouts, CAPTCHA, delays, and risk-based checks against brute force and credential attacks.
+
+4. API and abuse protection
+
+Implement:
+
+Global API rate limit: 100–300 requests/min/IP
+Auth endpoints: 5–10 attempts/min/IP
+Login failure: progressive delay or soft lockout
+Forgot password: 3–5/hour/email + IP
+Signup: 3–10/hour/IP
+Contact forms: CAPTCHA or turnstile
+File uploads: size/type limits + virus scanning
+
+Also add server-side validation on every endpoint. Never trust frontend validation.
+
+5. WAF and edge protection
+
+Use Cloudflare, AWS WAF, Fastly, or equivalent.
+
+Enable:
+
+Feature	Purpose
+WAF managed rules	Blocks common attacks
+Bot protection	Reduces scraping and fake signup abuse
+DDoS protection	Protects availability
+Geo/IP rules	Optional for admin areas
+Upload filtering	Blocks malicious payloads
+Rate limiting	Edge-level abuse control
+6. Data privacy and legal pages
+
+You need:
+
+Page / Policy	Required content
+Privacy Policy	What data you collect, why, retention, sharing, user rights
+Cookie Policy	Analytics, tracking, session cookies, marketing pixels
+Terms of Service	Use rules, liability, account termination
+Data deletion request	Simple way for users to request deletion
+Consent banner	Needed if using non-essential cookies/analytics in regulated regions
+7. Database and backend security
+
+Implement:
+
+Control	Requirement
+Encryption in transit	DB connection over TLS
+Encryption at rest	Enabled on DB/storage
+Least privilege	App DB user should not be superuser
+Backups	Automated, encrypted, tested restore
+Secrets	Use env/secret manager, never commit keys
+Logs	No passwords, tokens, SSNs, private data
+Audit logs	Admin actions, auth events, data exports
+Input validation	Server-side schema validation
+SQL injection protection	ORM/prepared statements only
+
+OWASP flags missing hardening, default accounts, unnecessary services, and verbose error output as common security misconfigurations.
+
+8. Minimum launch checklist
+
+Before going live:
+
+[ ] HTTPS enforced
+[ ] HSTS enabled
+[ ] CSP enabled and tested
+[ ] nosniff enabled
+[ ] Referrer-Policy enabled
+[ ] CAA DNS record added
+[ ] SPF, DKIM, DMARC configured
+[ ] WAF enabled
+[ ] API rate limits enabled
+[ ] Login and forgot-password limits enabled
+[ ] Passwords hashed with bcrypt/Argon2id
+[ ] Secure HttpOnly SameSite cookies
+[ ] Privacy Policy live
+[ ] Cookie Policy live
+[ ] Terms live
+[ ] Backups tested
+[ ] Error pages hide stack traces
+[ ] Admin MFA enabled
+[ ] Secrets not committed to Git
+
+For a serious consumer-data site, this is the floor, not the ceiling.

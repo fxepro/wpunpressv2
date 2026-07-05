@@ -63,8 +63,10 @@ export default function PrivacyPolicy() {
           You have the right to access, correct, erase, restrict, object to, or port your personal
           data, and the right not to have personal data sold (we don&apos;t sell it). Because we never
           receive your backup content, those requests apply only to the limited data above (logs,
-          payment records, correspondence). To exercise any right, contact us and we&apos;ll respond
-          within one month.
+          payment records, correspondence). To exercise any right — including deletion — use our{" "}
+          <a href="/data-deletion">Data Deletion Request</a> page or email{" "}
+          <a href="mailto:legal@wpunpress.com">legal@wpunpress.com</a>. We&apos;ll respond within
+          one month.
         </p>
 
         <h2 className="lp-h2">Retention</h2>

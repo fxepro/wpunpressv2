@@ -1,9 +1,27 @@
 import type { Handler } from "@netlify/functions";
-import { json, parseBody, paypalBase, paypalToken, totalUsd } from "./_lib";
+import { z } from "zod";
+import { checkRateLimit, getClientIp, json, parseBody, paypalBase, paypalToken, totalUsd } from "./_lib";
+
+const Body = z.object({ store: z.boolean().default(false) });
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
-  const store = parseBody(event.body).store === true;
+
+  const parsed = Body.safeParse(parseBody(event.body));
+  if (!parsed.success) return json(400, { error: "Invalid request body." });
+  const { store } = parsed.data;
+
+  const ip = getClientIp(event.headers as Record<string, string | undefined>);
+  const product = store ? "site+store" : "site";
+  const rl = await checkRateLimit(ip, product);
+  if (!rl.allowed) {
+    return json(
+      429,
+      { error: "Too many checkout attempts. Please wait before trying again." },
+      { "Retry-After": String(rl.retryAfter ?? 3600) },
+    );
+  }
+
   try {
     const token = await paypalToken();
     const res = await fetch(`${paypalBase()}/v2/checkout/orders`, {
@@ -23,6 +41,7 @@ export const handler: Handler = async (event) => {
     if (!data.id) return json(502, { error: "PayPal order failed" });
     return json(200, { id: data.id });
   } catch (err) {
-    return json(503, { error: err instanceof Error ? err.message : "PayPal not configured" });
+    console.error("[create-paypal-order]", err);
+    return json(503, { error: "Could not start checkout. Please try again." });
   }
 };
