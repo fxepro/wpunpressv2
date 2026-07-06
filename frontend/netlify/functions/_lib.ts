@@ -83,11 +83,10 @@ export async function checkRateLimit(
     return { allowed: true, remaining: RL_MAX - 1 };
   }
 
-  // New window or expired window
+  // New window or expired window — windowStart check on read handles expiry,
+  // so no TTL needed; stale records are simply ignored when encountered.
   if (!record || now - record.windowStart >= RL_WINDOW_MS) {
-    await store.set(key, { count: 1, windowStart: now } satisfies RlRecord, {
-      ttl: Math.ceil(RL_WINDOW_MS / 1000),
-    });
+    await store.setJSON(key, { count: 1, windowStart: now } satisfies RlRecord);
     return { allowed: true, remaining: RL_MAX - 1 };
   }
 
@@ -99,9 +98,7 @@ export async function checkRateLimit(
 
   // Within window, still has budget
   const next = record.count + 1;
-  await store.set(key, { count: next, windowStart: record.windowStart } satisfies RlRecord, {
-    ttl: Math.ceil((record.windowStart + RL_WINDOW_MS - now) / 1000),
-  });
+  await store.setJSON(key, { count: next, windowStart: record.windowStart } satisfies RlRecord);
   return { allowed: true, remaining: RL_MAX - next };
 }
 
@@ -113,8 +110,7 @@ export function getClientIp(headers: Record<string, string | undefined>): string
   return (
     headers["cf-connecting-ip"] ??
     headers["x-nf-client-connection-ip"] ??
-    (headers["x-forwarded-for"] ?? "").split(",")[0].trim() ||
-    "unknown"
+    ((headers["x-forwarded-for"] ?? "").split(",")[0].trim() || "unknown")
   );
 }
 
